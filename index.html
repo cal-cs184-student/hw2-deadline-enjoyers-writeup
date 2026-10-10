@@ -1,116 +1,247 @@
-<html>
-	<head>
-		<script src='https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.4/MathJax.js?config=default'></script>
-		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-		<style>
-			h1 {
-				text-align: center;
-			}
+<!doctype html>
+<html lang="en">
 
-			.container {
-				margin: 0 auto;
-				padding: 60px 20%;
-			}
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CS 184 Fall 2026 · Homework 2 Write-Up</title>
+  <link rel="stylesheet" href="./style.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js"></script>
+</head>
 
-			figure {
-				text-align: center;
-			}
+<body>
+  <main>
+    <div class="eyebrow">CS 184/284A · Fall 2026</div>
+    <h1>Homework 2: Geometry Processing</h1>
+    <p class="byline">Write-up by Arthur Yu and Wenxuan Yuan</p>
+    <div class="meta">
+      <p><strong>Webpage:</strong> <a
+          href="https://cal-cs184-student.github.io/hw2-deadline-enjoyers-writeup/">https://cal-cs184-student.github.io/hw2-deadline-enjoyers-writeup/</a>
+      </p>
+      <p><strong>Code repository:</strong> <a
+          href="https://github.com/cal-cs184-student/hw2-deadline-enjoyers">https://github.com/cal-cs184-student/hw2-deadline-enjoyers</a>
+      </p>
+      <p><strong>Write-up repository:</strong> <a
+          href="https://github.com/cal-cs184-student/hw2-deadline-enjoyers-writeup">https://github.com/cal-cs184-student/hw2-deadline-enjoyers-writeup</a>
+      </p>
+    </div>
 
-			img {
-				display: inline-block;
-			}
+    <h2>Overview</h2>
+    <p class="lead">We implemented de Casteljau evaluation for Bézier curves and tensor-product patches, area-weighted
+      vertex normals, half-edge edge flips and splits, and Loop subdivision. The first two parts turn control points
+      into a smooth shape; the remaining parts change how a triangle mesh is shaded and connected.</p>
+    <p>The most useful insight was that the geometry and its connectivity play different roles. A flip changes which
+      vertices are neighbors without moving them. A split creates a new vertex and four local triangles. Loop
+      subdivision combines those local operations with weighted positions, so the same geometric cube can produce
+      noticeably different smooth limits when its original face diagonals give the corners different valences.</p>
+    <p>We used the provided <code>meshedit</code> viewer for the images below. The curve figures use our six-point <a
+        href="./assets/custom-curve.bzc">control-point file</a>; the cube comparison also includes a <a
+        href="./assets/cube-symmetric.dae">symmetrically triangulated cube</a> derived from the supplied
+      <code>dae/cube.dae</code>.
+    </p>
 
-			body {
-				font-family: 'Inter', sans-serif;
-			}
-		</style>
-	</head>
-	<body>
-		<div class="container">
-		<h1>CS184/284A Fall 2026 Homework 2 Write-Up</h1>
-		<div style="text-align: center;">Names: </div>
+    <h2>Section I: Bézier Curves and Surfaces</h2>
+    <h3>Part 1: Bézier curves with 1D de Casteljau subdivision</h3>
+    <p>For consecutive points at one level, de Casteljau interpolation makes a shorter level at parameter <em>t</em>:
+    </p>
+    <div class="equation">\[P_i^{(k+1)} = (1-t)P_i^{(k)} + tP_{i+1}^{(k)}.\]</div>
+    <p>Our <code>BezierCurve::evaluateStep</code> applies this formula to each adjacent pair and returns one fewer
+      point. Repeating it five times for six controls leaves one point on the degree-five curve. The viewer uses
+      repeated calls both for the <kbd>E</kbd> visualization and for sampling the complete curve shown by <kbd>C</kbd>.
+      We chose a curve with two high controls and a low middle section to make the intermediate polygons easy to
+      distinguish.</p>
+    <div class="gallery">
+      <figure><img src="./assets/curve-level-0.png" alt="Six initial control points">
+        <figcaption><span class="label">Level 0.</span> Our six original control points and control polygon.
+        </figcaption>
+      </figure>
+      <figure><img src="./assets/curve-level-1.png" alt="Five first-level interpolated points">
+        <figcaption><span class="label">Level 1.</span> Five blue points after one press of <kbd>E</kbd>.</figcaption>
+      </figure>
+      <figure><img src="./assets/curve-level-2.png" alt="Four second-level interpolated points">
+        <figcaption><span class="label">Level 2.</span> Four points in the newest interpolation level.</figcaption>
+      </figure>
+      <figure><img src="./assets/curve-level-3.png" alt="Three third-level interpolated points">
+        <figcaption><span class="label">Level 3.</span> Three points in the newest level.</figcaption>
+      </figure>
+      <figure><img src="./assets/curve-level-4.png" alt="Two fourth-level interpolated points">
+        <figcaption><span class="label">Level 4.</span> Two points remain in the newest level.</figcaption>
+      </figure>
+      <figure><img src="./assets/curve-level-5.png" alt="Final red evaluated point">
+        <figcaption><span class="label">Level 5.</span> The final evaluated point is red.</figcaption>
+      </figure>
+      <figure><img src="./assets/curve-complete.png" alt="Complete green Bézier curve">
+        <figcaption><span class="label">Complete curve.</span> <kbd>C</kbd> draws the sampled green curve; the red point
+          lies on it.</figcaption>
+      </figure>
+      <figure><img src="./assets/curve-variant.png"
+          alt="Curve with two modified controls and a changed evaluation parameter">
+        <figcaption><span class="label">Modified controls and t.</span> We raised the third and fourth original controls
+          in a second six-point file, then scrolled to change <em>t</em>. The green shape and red evaluation point both
+          change.</figcaption>
+      </figure>
+    </div>
 
-		<br>
+    <h3>Part 2: Bézier surfaces with separable 1D de Casteljau</h3>
+    <p>A tensor-product Bézier patch can be evaluated without a separate 2D interpolation formula. For a fixed
+      <em>u</em>, we run the 3D version of de Casteljau along each row of the control grid, leaving one intermediate
+      point per row. We then run the same 1D evaluator on that vector at <em>v</em>. In code, <code>evaluateStep</code>
+      performs one 3D interpolation level, <code>evaluate1D</code> repeats it until one point remains, and
+      <code>evaluate(u,v)</code> calls it along both axes.
+    </p>
+    <div class="gallery single">
+      <figure><img src="./assets/bezier-teapot.png" alt="Teapot rendered from bez/teapot.bez">
+        <figcaption><span class="label">Bézier teapot.</span> The rendered surface comes from
+          <code>bez/teapot.bez</code>, rather than the triangle-mesh <code>.dae</code> file. The visible triangles are
+          the viewer's tessellation of our evaluated patches.
+        </figcaption>
+      </figure>
+    </div>
 
-		Link to webpage: (TODO) <a href="https://cs184.eecs.berkeley.edu/fa26">cs184.eecs.berkeley.edu/fa26</a>
+    <h2>Section II: Triangle Meshes and Half-Edge Data Structure</h2>
+    <h3>Part 3: Area-weighted vertex normals</h3>
+    <p>Starting at a vertex's outgoing half-edge, we visit its incident faces with
+      <code>h = h-&gt;twin()-&gt;next()</code>. For each non-boundary triangle with vertices <em>p</em>,
+      \(p_1\), and \(p_2\), we accumulate \((p_1-p)\times(p_2-p)\). This cross
+      product has magnitude twice the triangle area, so large incident triangles receive proportionally more weight. We
+      normalize the sum once at the end and return a zero vector if its length is zero.
+    </p>
+    <div class="gallery">
+      <figure><img src="./assets/teapot-flat.png" alt="Triangle mesh teapot with flat shading">
+        <figcaption><span class="label">Flat shading.</span> Each triangle of <code>dae/teapot.dae</code> uses a face
+          normal; the body appears faceted.</figcaption>
+      </figure>
+      <figure><img src="./assets/teapot-phong.png" alt="Triangle mesh teapot with smooth vertex normals">
+        <figcaption><span class="label">Phong shading.</span> Pressing <kbd>Q</kbd> enables our vertex normals. The mesh
+          edges remain visible, but the lighting changes smoothly across triangles.</figcaption>
+      </figure>
+    </div>
 
-		<br>
-		
-		Link to GitHub repository: (TODO) <a href="https://cs184.eecs.berkeley.edu/fa26">cs184.eecs.berkeley.edu/fa26</a>
+    <h3>Part 4: Edge flip</h3>
+    <p>For an interior edge shared by triangles <em>(a,b,c)</em> and <em>(b,a,d)</em>, the flip replaces diagonal
+      <em>(a,b)</em> with <em>(c,d)</em>. We keep the same edge, half-edges, faces, and vertices; we only change the six
+      local half-edges' <code>next</code>, <code>twin</code>, <code>vertex</code>, <code>edge</code>, and
+      <code>face</code> references, followed by the incident representative pointers. The routine returns immediately
+      for a boundary edge. Recording all six half-edges before changing any links was the key way to keep the rewiring
+      auditable.
+    </p>
+    <p>Our check was to select interior edges on the teapot and press <kbd>F</kbd> repeatedly. The local diagonals
+      change, while the teapot silhouette and vertex positions stay the same. After each flip, the viewer clears its
+      selection because the old selected feature may no longer represent the same local topology.</p>
+    <div class="gallery">
+      <figure><img src="./assets/teapot-flip-before.png" alt="Teapot mesh before edge flips">
+        <figcaption><span class="label">Before.</span> Original teapot triangulation before editing interior edges near
+          the middle.</figcaption>
+      </figure>
+      <figure><img src="./assets/teapot-flip-several.png" alt="Teapot mesh after three edge flips">
+        <figcaption><span class="label">After three flips.</span> Three nearby body diagonals have been replaced. The
+          outline is unchanged; only local connectivity differs.</figcaption>
+      </figure>
+    </div>
 
-		<figure>
-			<img src="assets/teapot.png" alt="Teapot" style="width:50%"/>
-			<figcaption>You can add images with captions!</figcaption>
-		</figure>
+    <h3>Part 5: Edge split</h3>
+    <p>For an interior edge <em>(a,b)</em> with opposite vertices <em>c</em> and <em>d</em>, our split creates midpoint
+      \(m=(a+b)/2\). The original two triangles become four. We allocate one vertex, three additional edges, two
+      additional faces, and six additional half-edges, while reusing the original edge and half-edges for <em>a–m</em>.
+      We assign every local <code>next</code>, <code>twin</code>, <code>vertex</code>, <code>edge</code>, and
+      <code>face</code> reference, then update the representative pointers on the touched elements.
+    </p>
+    <p>The two halves of the old edge remain marked old; the two spokes to <em>c</em> and <em>d</em> are marked new.
+      These flags matter in Part 6, where only certain new edges are flipped. We checked the operation on the coarse
+      icosahedron because the four triangles are much easier to see there than on the dense teapot. We then flipped one
+      newly formed connection to check that the two local editing operations work together. Boundary-edge splitting is
+      outside this implementation: the function leaves such an edge unchanged.</p>
+    <div class="gallery">
+      <figure><img src="./assets/split-before.png" alt="Icosahedron before split">
+        <figcaption><span class="label">Before split.</span> Original icosahedron before splitting an interior edge.
+        </figcaption>
+      </figure>
+      <figure><img src="./assets/split-after.png" alt="Icosahedron after selected edge split">
+        <figcaption><span class="label">After split.</span> A midpoint and spokes divide two triangles into four.
+        </figcaption>
+      </figure>
+      <figure><img src="./assets/split-after.png" alt="Icosahedron after split before subsequent flip">
+        <figcaption><span class="label">Split, before flip.</span> The new spoke from the midpoint toward the top vertex
+          is visible.</figcaption>
+      </figure>
+      <figure><img src="./assets/split-and-flip.png" alt="Icosahedron after split followed by flip">
+        <figcaption><span class="label">Split, then flip.</span> Flipping that spoke changes the local diagonal again
+          without changing the outer silhouette.</figcaption>
+      </figure>
+    </div>
 
-		<!--
-		We've already added one heading per part, to make your write-up as navigable when grading. Please fit your write-up within these sections!
-		-->
+    <h3>Part 6: Loop subdivision for mesh upsampling</h3>
+    <p>Our upsampler first stores lists of the original vertices and edges. This prevents elements created by splitting
+      from being processed as original elements in the same iteration. For an old vertex of degree <em>n</em>, we
+      compute a new position using its one-ring neighbors:</p>
+    <div class="equation">\[v' = (1-nu)v + u\sum_{i=1}^{n}v_i,\qquad
+      u = \begin{cases}\frac{3}{16}, & n=3,\\[2pt]\frac{3}{8n}, & n\ne 3.\end{cases}\]</div>
+    <p>For each original edge with endpoints <em>a,b</em> and opposite vertices <em>c,d</em>, we precompute its new
+      vertex position as \(\frac{3}{8}(a+b)+\frac{1}{8}(c+d)\). We then split every original edge, assign that
+      precomputed
+      position to its midpoint, flip only new edges joining an old and a new vertex, and finally apply all stored
+      positions. Delaying the position updates keeps every weight based on the same original mesh.</p>
+    <p>In the cube sequence below, repeated subdivision rounds off the original corners and edges; the coarse faceted
+      cube approaches a smoother shape. A sharp feature loses its sharpness because Loop's weighted averages pull both
+      old vertices and edge points toward their neighbors. A practical way to keep a ridge or corner more pronounced is
+      to insert short support edges near it before subdivision, so the local averaging acts over a shorter distance.
+      This is a topology-and-spacing effect, not a special crease rule in our code.</p>
+    <div class="gallery">
+      <figure><img src="./assets/cube-0.png" alt="Original triangulated cube">
+        <figcaption><span class="label">0 rounds.</span> The front square of the supplied <code>dae/cube.dae</code>
+          contains one diagonal.</figcaption>
+      </figure>
+      <figure><img src="./assets/cube-1.png" alt="Cube after one Loop subdivision">
+        <figcaption><span class="label">1 round.</span> Corners start to retract and the surface becomes faceted but
+          rounded.</figcaption>
+      </figure>
+      <figure><img src="./assets/cube-2.png" alt="Cube after two Loop subdivisions">
+        <figcaption><span class="label">2 rounds.</span> The uneven triangular pattern and slight silhouette imbalance
+          are visible.</figcaption>
+      </figure>
+      <figure><img src="./assets/cube-3.png" alt="Cube after three Loop subdivisions">
+        <figcaption><span class="label">3 rounds.</span> The cube is smoother, but its original nonuniform vertex
+          neighborhoods still affect the limit shape.</figcaption>
+      </figure>
+    </div>
+    <p>The diagonal of each original square connects only two of its four corners. Across six faces, that gives cube
+      corners different numbers and arrangements of neighbors, so Loop's valence-dependent weights break the cube's
+      symmetry. We tested a flip on one face to reverse its diagonal, then split that diagonal; the resulting four
+      triangles meet at the face center. Repeating the face-center split on all six faces makes every original cube
+      corner adjacent to three original cube edges and three face centers. The separate <code>cube-symmetric.dae</code>
+      asset encodes that same six-face preprocessing for a reproducible comparison. A flip alone merely changes which
+      two corners are favored; splitting each face diagonal removes that choice.</p>
+    <div class="gallery compact">
+      <figure><img src="./assets/cube-flipped.png" alt="Cube front face after edge flip">
+        <figcaption><span class="label">Flip experiment.</span> The front-face diagonal reverses direction; the square's
+          shape is unchanged.</figcaption>
+      </figure>
+      <figure><img src="./assets/cube-flipped-split.png"
+          alt="Cube front face after flipping and splitting the diagonal">
+        <figcaption><span class="label">Flip then split.</span> A face-center vertex connects to all four corners.
+        </figcaption>
+      </figure>
+      <figure><img src="./assets/cube-symmetric-0.png" alt="Cube with every face diagonally split">
+        <figcaption><span class="label">Symmetric input.</span> All six faces are divided into four triangles around
+          their centers.</figcaption>
+      </figure>
+      <figure><img src="./assets/cube-symmetric-1.png" alt="Symmetric cube after one Loop subdivision">
+        <figcaption><span class="label">1 round.</span> The visible front triangulation and outline are balanced about
+          both center axes.</figcaption>
+      </figure>
+      <figure><img src="./assets/cube-symmetric-2.png" alt="Symmetric cube after two Loop subdivisions">
+        <figcaption><span class="label">2 rounds.</span> A more even rounded-square outline than the original topology.
+        </figcaption>
+      </figure>
+      <figure><img src="./assets/cube-symmetric-3.png" alt="Symmetric cube after three Loop subdivisions">
+        <figcaption><span class="label">3 rounds.</span> The face-centered neighborhoods preserve the cube's visible
+          symmetry as it smooths.</figcaption>
+      </figure>
+    </div>
+    <div class="note"><strong>Implementation scope.</strong> The core algorithms above are implemented for the
+      assignment's interior/closed meshes. We did not implement boundary-edge splitting, boundary Loop rules, or
+      optional extra-credit extensions, so we make no boundary or extra-credit claim.</div>
+  </main>
+</body>
 
-		<h2>Overview</h2>
-		Give a high-level overview of what you implemented in this homework. Think about what you've built as a whole. Share your thoughts on what interesting things you've learned from completing the homework.
-
-		<h2>Section I: Bezier Curves and Surfaces</h2>
-
-		<h3>Part 1: Bezier curves with 1D de Casteljau subdivision</h3>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<p>Here is an example 2x2 gridlike structure using an HTML table. Each <b>tr</b> is a row and each <b>td</b> is a column in that row. You might find this useful for framing and showing your result images in an organized fashion.</p>
-		<div style="display: flex; flex-direction: column; align-items: center;">
-			<table style="width: 100%; text-align: center; border-collapse: collapse;">
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="assets/teapot.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="assets/teapot.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="assets/teapot.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="assets/teapot.png" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			</table>
-		</div>
-
-		<h3>Part 2: Bezier surfaces with separable 1D de Casteljau</h3>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>Section II: Triangle Meshes and Half-Edge Data Structure</h2>
-
-		<h3>Part 3: Area-weighted vertex normals</h3>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h3>Part 4: Edge flip</h3>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h3>Part 5: Edge split</h3>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h3>Part 6: Loop subdivision for mesh upsampling</h3>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>(Optional) Section III: Potential Extra Credit - Art Competition: Model something Creative</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-		<h2>Additional Notes (please remove)</h2>
-		<ul>
-			<li>You can also add code if you'd like as so: <code>code code code</code></li>
-			<li>If you'd like to add math equations, 
-				<ul>
-					<li>You can write inline equations like so: \( a^2 + b^2 = c^2 \)</li>
-					<li>You can write display equations like so: \[ a^2 + b^2 = c^2 \]</li>
-				</ul>
-			</li>
-		</ul>
-		</div>
-	</body>
 </html>
